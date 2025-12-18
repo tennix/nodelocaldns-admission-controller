@@ -1,0 +1,176 @@
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: ca-issuer
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: nodelocaldns-webhook-certs
+  namespace: kube-system
+spec:
+  dnsNames:
+  - nodelocaldns-webhook.kube-system.svc
+  - nodelocaldns-webhook.kube-system.svc.cluster.local
+  duration: 87600h0m0s
+  issuerRef:
+    kind: ClusterIssuer
+    name: ca-issuer
+  renewBefore: 720h0m0s
+  secretName: nodelocaldns-webhook-certs
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nodelocaldns-webhook
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nodelocaldns-webhook
+rules:
+  - apiGroups: ["*"]
+    resources: ["services"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nodelocaldns-webhook
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nodelocaldns-webhook
+subjects:
+  - kind: ServiceAccount
+    name: nodelocaldns-webhook
+    namespace: kube-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nodelocaldns-webhook
+  namespace: kube-system
+  labels:
+    app: nodelocaldns-webhook
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nodelocaldns-webhook
+  template:
+    metadata:
+      labels:
+        app: nodelocaldns-webhook
+    spec:
+      serviceAccountName: nodelocaldns-webhook
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        fsGroup: 65534
+      containers:
+      - name: webhook
+        image: nodelocaldns-admission-controller:20251217
+        ports:
+        - containerPort: 8443
+          name: webhook-api
+          protocol: TCP
+        - containerPort: 8080
+          name: metrics
+          protocol: TCP
+        env:
+        - name: TLS_CERT_FILE
+          value: /etc/certs/tls.crt
+        - name: TLS_KEY_FILE
+          value: /etc/certs/tls.key
+        - name: WEBHOOK_PORT
+          value: "8443"
+        - name: METRICS_PORT
+          value: "8080"
+        - name: NODE_LOCAL_DNS_ADDRESS
+          value: "169.254.20.10"
+          # valueFrom:
+          #   configMapKeyRef:
+          #     name: dns-config-webhook
+          #     key: nodeLocalDNSAddress
+          #     optional: true
+        - name: SEARCH_DOMAINS
+          value: "default.svc.cluster.local,svc.cluster.local,cluster.local"
+          # valueFrom:
+          #   configMapKeyRef:
+          #     name: dns-config-webhook
+          #     key: searchDomains
+          #     optional: true
+        - name: DNS_OPTIONS
+          value: "ndots:3,attempts:2,timeout:1"
+          # valueFrom:
+          #   configMapKeyRef:
+          #     name: dns-config-webhook
+          #     key: dnsOptions
+          #     optional: true
+        volumeMounts:
+        - name: certs
+          mountPath: /etc/certs
+          readOnly: true
+        resources:
+          limits:
+            cpu: 500m
+            memory: 256Mi
+          requests:
+            cpu: 100m
+            memory: 128Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+        # livenessProbe:
+        #   httpGet:
+        #     path: /healthz
+        #     port: 8080
+        #     scheme: HTTP
+        #   initialDelaySeconds: 10
+        #   periodSeconds: 10
+        #   timeoutSeconds: 5
+        #   failureThreshold: 3
+        # readinessProbe:
+        #   httpGet:
+        #     path: /readyz
+        #     port: 8080
+        #     scheme: HTTP
+        #   initialDelaySeconds: 5
+        #   periodSeconds: 5
+        #   timeoutSeconds: 5
+        #   failureThreshold: 3
+      volumes:
+      - name: certs
+        secret:
+          secretName: nodelocaldns-webhook-certs
+      terminationGracePeriodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nodelocaldns-webhook
+  namespace: kube-system
+  labels:
+    app: nodelocaldns-webhook
+spec:
+  type: ClusterIP
+  ports:
+  - name: webhook-api
+    port: 443
+    targetPort: 8443
+    protocol: TCP
+  - name: metrics
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  selector:
+    app: nodelocaldns-webhook

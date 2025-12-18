@@ -1,0 +1,61 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  labels:
+    app: nodelocaldns-admission-controller
+  name: nodelocaldns-admission-controller
+webhooks:
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    caBundle: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURHRENDQWdDZ0F3SUJBZ0lVZWZXSnpwaXlVcXdmazR4WkZLaHhJRmpaYUM4d0RRWUpLb1pJaHZjTkFRRUwKQlFBd0FEQWVGdzB5TlRFeU1UY3hOVEUwTlRkYUZ3MHpOVEV5TVRVeE5URTBOVGRhTUFBd2dnRWlNQTBHQ1NxRwpTSWIzRFFFQkFRVUFBNElCRHdBd2dnRUtBb0lCQVFDcEl0RkE0WTczWW9hUjQ1cFNWT004MUdmdFFMZ2JXWXgvCnBOVnM0anVOLzl0eUNFYm5HcEo1WTRhRG9pYXRCY1BONDBoUWpIUVRKRnpMVUx0ZEp5Rlh2dEsySytLMmpSK3YKd1g5WjZUTGhLNHJJN1VUcCs2Vy8wU0l3YXE5ZHNqbW82YWN5WldsYjMrNnpVZlJmZG45TUJPZHpXU0V2UVVpdQp4R3NRY2loQnQ1T0liVzlZbk9RblNIczJzSk4xanMyYkF4UVpRalJNTitMbmFXRkFxNFJBVnVRWStoMCtZaHJRCmNYandmL1ExTVJYV3lCQURKNXF2eDhwSXFiTi93K1d2b3ZGWU11Q3IyS1V1WjQ1aHRPRUtpYVcvVEtzQWZjaTAKSTVMbVNRVmMwRk1nQXdIN3BMVXU4L0NtVUVWSVB5TXZuZzFUMWtLRDZ1SGZUSFdjVVJNOUFnTUJBQUdqZ1lrdwpnWVl3RGdZRFZSMFBBUUgvQkFRREFnV2dNQXdHQTFVZEV3RUIvd1FDTUFBd1pnWURWUjBSQVFIL0JGd3dXb0lrCmJtOWtaV3h2WTJGc1pHNXpMWGRsWW1odmIyc3VhM1ZpWlMxemVYTjBaVzB1YzNaamdqSnViMlJsYkc5allXeGsKYm5NdGQyVmlhRzl2YXk1cmRXSmxMWE41YzNSbGJTNXpkbU11WTJ4MWMzUmxjaTVzYjJOaGJEQU5CZ2txaGtpRwo5dzBCQVFzRkFBT0NBUUVBQk5laGNodElHVG14M1ZzVElVOWN0ZWV6YTZjU1k4bGp2VWh2emg4Vk5ScFNXcGJuCjBxTDY2bEVDUHRSUkhMcVgyWFVWQ3RZVDc0MEZZVGgzenJxRVNNbHd5Z3RaZVd2cjFMVW9kTGNJTjJQRmo1VFMKQ3lKSXZ6aHU2T3M0ZkJZc1dOVjdHWExzcE1Ra01Ub3V3VlRFbG1ENkxxRkZnbHBPaFl3WCtmZlNlTTN4NTRsOAphd3FwWndjZ1BYVnMwTVNreXdaQzB2S0pJWlQyeURrRHVhR1R6UXFCdDA3RWpXZS9GbUJvVzNNYjYxbVFudFV3CnBLVWlzMVVNbUZWNGhuR1Nkai9JRnBrUnI3SWRJaW5QWEJESTg1ODNULzZhRVhoV0k0Mk5GYVFWcXJnTnl3enUKR3BLcnRBUnY3SVhMSExNKy9WVkI5Z2p2ZmdpcGh0MWkyaHpuVHc9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg==
+    service:
+      name: nodelocaldns-webhook
+      namespace: kube-system
+      path: /inject
+      port: 443
+  failurePolicy: Ignore
+  matchPolicy: Equivalent
+  name: nodelocaldns-admission-controller.k8s.io
+  namespaceSelector:
+    matchExpressions:
+    - key: virtual-node-affinity-injection
+      operator: DoesNotExist
+    - key: eci
+      operator: DoesNotExist
+    - key: alibabacloud.com/eci
+      operator: DoesNotExist
+    - key: kubernetes.io/metadata.name
+      operator: NotIn
+      values:
+      - kube-system
+      - kube-public
+      - arms-prom
+      - security-inspector
+      - ack-csi-fuse
+    matchLabels:
+      node-local-dns-injection: enabled
+  objectSelector:
+    matchExpressions:
+    - key: eci
+      operator: DoesNotExist
+    - key: alibabacloud.com/eci
+      operator: DoesNotExist
+    - key: node-local-dns-injection
+      operator: NotIn
+      values:
+      - disabled
+  reinvocationPolicy: Never
+  rules:
+  - apiGroups:
+    - ""
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - pods
+    scope: '*'
+  sideEffects: None
+  timeoutSeconds: 10
