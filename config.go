@@ -10,7 +10,7 @@ import (
 const (
 	// Environment variable names
 	EnvNodeLocalDNSAddress = "NODE_LOCAL_DNS_ADDRESS"
-	EnvSearchDomains       = "SEARCH_DOMAINS"
+	EnvClusterDomain       = "CLUSTER_DOMAIN"
 	EnvDNSOptions          = "DNS_OPTIONS"
 )
 
@@ -18,8 +18,8 @@ const (
 type Config struct {
 	// NodeLocalDNSAddress is the IP address of the node local DNS cache
 	NodeLocalDNSAddress string `json:"nodeLocalDNSAddress" yaml:"nodeLocalDNSAddress"`
-	// SearchDomains are the DNS search domains to inject
-	SearchDomains []string `json:"searchDomains" yaml:"searchDomains"`
+	// ClusterDomain is the k8s cluster domain, such as cluster.local
+	ClusterDomain string `json:"clusterDomain" yaml:"clusterDomain"`
 	// DNSOptions are the DNS options to inject
 	DNSOptions []DNSOption `json:"dnsOptions" yaml:"dnsOptions"`
 	// ClusterDNSAddress is the discovered cluster DNS service IP
@@ -48,11 +48,7 @@ type DNSConfig struct {
 func DefaultConfig() *Config {
 	return &Config{
 		NodeLocalDNSAddress: "169.254.20.10",
-		SearchDomains: []string{
-			"default.svc.cluster.local",
-			"svc.cluster.local",
-			"cluster.local",
-		},
+		ClusterDomain:       "cluster.local",
 		DNSOptions: []DNSOption{
 			{Name: "ndots", Value: "3"},
 			{Name: "attempts", Value: "2"},
@@ -96,12 +92,9 @@ func loadFromEnvironment(config *Config) error {
 	}
 	config.NodeLocalDNSAddress = addr
 
-	// Load search domains (optional, use defaults if not provided)
-	if domains := os.Getenv(EnvSearchDomains); domains != "" {
-		config.SearchDomains = strings.Split(domains, ",")
-		for i, domain := range config.SearchDomains {
-			config.SearchDomains[i] = strings.TrimSpace(domain)
-		}
+	// Load cluster domain (optional, use default if not provided)
+	if domain := os.Getenv(EnvClusterDomain); domain != "" {
+		config.ClusterDomain = domain
 	}
 
 	// Load DNS options (optional, use defaults if not provided)
@@ -128,15 +121,9 @@ func validateConfig(config *Config) error {
 		return fmt.Errorf("invalid cluster DNS address: %w", err)
 	}
 
-	// Validate search domains
-	if len(config.SearchDomains) == 0 {
-		return fmt.Errorf("search domains cannot be empty")
-	}
-
-	for _, domain := range config.SearchDomains {
-		if strings.TrimSpace(domain) == "" {
-			return fmt.Errorf("search domain cannot be empty")
-		}
+	// Validate cluster domain
+	if len(config.ClusterDomain) == 0 {
+		return fmt.Errorf("cluster domain cannot be empty")
 	}
 
 	// Validate DNS options

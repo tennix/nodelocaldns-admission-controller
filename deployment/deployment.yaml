@@ -97,8 +97,8 @@ spec:
           #     name: dns-config-webhook
           #     key: nodeLocalDNSAddress
           #     optional: true
-        - name: SEARCH_DOMAINS
-          value: "default.svc.cluster.local,svc.cluster.local,cluster.local"
+        - name: CLUSTER_DOMAIN
+          value: "cluster.local"
           # valueFrom:
           #   configMapKeyRef:
           #     name: dns-config-webhook

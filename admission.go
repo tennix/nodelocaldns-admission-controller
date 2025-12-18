@@ -35,9 +35,14 @@ func (s *Server) processAdmissionRequest(req *admissionv1.AdmissionRequest) *adm
 	podCopy := pod.DeepCopy()
 	switch req.Operation {
 	case admissionv1.Create: // for create, we need to inject dnsConfig
+		domains := []string{
+			fmt.Sprintf("%s.svc.%s", pod.Namespace, s.config.ClusterDomain),
+			fmt.Sprintf("svc.%s", s.config.ClusterDomain),
+			s.config.ClusterDomain,
+		}
 		dnsConfig := &DNSConfig{
-			Nameservers: []string{s.config.NodeLocalDNSAddress},
-			Searches:    s.config.SearchDomains,
+			Nameservers: []string{s.config.NodeLocalDNSAddress, s.config.ClusterDNSAddress},
+			Searches:    domains,
 			Options:     s.config.DNSOptions,
 		}
 		if err := injectDNSConfig(podCopy, dnsConfig); err != nil {
