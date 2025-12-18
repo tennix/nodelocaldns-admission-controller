@@ -3,9 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"time"
 
-	"go.uber.org/zap"
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -13,7 +11,7 @@ import (
 )
 
 // processAdmissionRequest processes an admission request and returns an admission response
-func (s *Server) processAdmissionRequest(req *admissionv1.AdmissionRequest, startTime time.Time) *admissionv1.AdmissionResponse {
+func (s *Server) processAdmissionRequest(req *admissionv1.AdmissionRequest) *admissionv1.AdmissionResponse {
 	// Create base response with request UID
 	response := &admissionv1.AdmissionResponse{
 		UID:     req.UID,
@@ -23,58 +21,52 @@ func (s *Server) processAdmissionRequest(req *admissionv1.AdmissionRequest, star
 	// Only process Pod resources
 	if req.Kind.Kind != "Pod" || req.Resource.Resource != "pods" {
 		s.logger.V(3).Info("Skipping non-pod resource",
-			zap.String("kind", req.Kind.Kind),
-			zap.String("resource", req.Resource.Resource),
+			"kind", req.Kind.Kind,
+			"resource", req.Resource.Resource,
 		)
 		return response
 	}
 
-	// Only process CREATE and UPDATE operations
-	if req.Operation != admissionv1.Create && req.Operation != admissionv1.Update {
-		s.logger.V(3).Info("Skipping non-create/update operation",
-			zap.String("operation", string(req.Operation)),
-		)
-		return response
-	}
-
-	// Parse pod from request
-	pod, err := s.parsePodFromRequest(req)
-	if err != nil {
-		s.logger.Error(err, "Failed to parse pod from request")
+	var pod corev1.Pod
+	if err := json.Unmarshal(req.Object.Raw, &pod); err != nil {
+		s.logger.Error(err, "Failed to unmarshal pod from request")
 		return s.createErrorResponse(string(req.UID), fmt.Sprintf("Failed to parse pod: %v", err))
 	}
-
-	s.logger.Info("Starting DNS injection",
-		zap.String("Name", pod.Name),
-		zap.String("Namespace", pod.Namespace),
-	)
-
-	// Get current configuration
-	config := s.config
-
-	// Create DNS configuration for injection
-	dnsConfig := s.createDNSConfig(config)
-
-	// Create a copy of the pod for modification
 	podCopy := pod.DeepCopy()
+	switch req.Operation {
+	case admissionv1.Create: // for create, we need to inject dnsConfig
+		dnsConfig := &DNSConfig{
+			Nameservers: []string{s.config.NodeLocalDNSAddress},
+			Searches:    s.config.SearchDomains,
+			Options:     s.config.DNSOptions,
+		}
+		if err := injectDNSConfig(podCopy, dnsConfig); err != nil {
+			s.logger.Error(err, "DNS injection failed",
+				"Name", pod.Name,
+				"Namespace", pod.Namespace,
+			)
 
-	// Inject DNS configuration
-	injectionStart := time.Now()
-	if err := injectDNSConfig(podCopy, dnsConfig); err != nil {
-		s.logger.Error(err, "DNS injection failed",
-			zap.String("Name", pod.Name),
-			zap.String("Namespace", pod.Namespace),
-		)
-
-		return s.createErrorResponse(string(req.UID), fmt.Sprintf("Failed to inject DNS configuration: %v", err))
+			return s.createErrorResponse(string(req.UID), fmt.Sprintf("Failed to inject DNS configuration: %v", err))
+		}
+	case admissionv1.Update: // for update, we need to reset the dnsConfig
+		var oldPod corev1.Pod
+		if err := json.Unmarshal(req.OldObject.Raw, &oldPod); err != nil {
+			s.logger.Error(err, "Failed to unmarshal old pod from update request")
+			return s.createErrorResponse(string(req.UID), fmt.Sprintf("Failed to parse pod: %v", err))
+		}
+		// DNSPolicy and DNSConfig is immutable, need to reset to the same as existing pod
+		// The generated patch will have no effect
+		podCopy.Spec.DNSConfig = oldPod.Spec.DNSConfig
+		podCopy.Spec.DNSPolicy = oldPod.Spec.DNSPolicy
+	default:
+		s.logger.V(3).Info("Skipping non-create/update operation", "operation", string(req.Operation))
+		return response
 	}
-
-	// Generate JSON patch for the modifications
-	patch, err := s.generateJSONPatch(pod, podCopy)
+	patch, err := s.generateJSONPatch(&pod, podCopy)
 	if err != nil {
 		s.logger.Error(err, "Failed to generate patch",
-			zap.String("Name", pod.Name),
-			zap.String("Namespace", pod.Namespace),
+			"Name", pod.Name,
+			"Namespace", pod.Namespace,
 		)
 		return s.createErrorResponse(string(req.UID), fmt.Sprintf("Failed to generate patch: %v", err))
 	}
@@ -84,63 +76,11 @@ func (s *Server) processAdmissionRequest(req *admissionv1.AdmissionRequest, star
 	response.Patch = patch
 	response.PatchType = &patchType
 
-	s.logger.Info("DNS injection successful",
-		zap.String("Name", pod.Name),
-		zap.String("Namespace", pod.Namespace),
-		zap.Duration("Duration", time.Since(injectionStart)),
-		zap.Int("patchSize", len(patch)),
+	s.logger.V(3).Info("DNS injection successful",
+		"Name", pod.Name,
+		"Namespace", pod.Namespace,
 	)
-
 	return response
-}
-
-// parsePodFromRequest extracts a Pod object from the admission request
-func (s *Server) parsePodFromRequest(req *admissionv1.AdmissionRequest) (*corev1.Pod, error) {
-	var pod corev1.Pod
-
-	if req.Object.Raw == nil {
-		return nil, fmt.Errorf("admission request object is nil")
-	}
-
-	if err := json.Unmarshal(req.Object.Raw, &pod); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal pod object: %w", err)
-	}
-
-	// Set namespace if not present (for CREATE operations)
-	if pod.Namespace == "" && req.Namespace != "" {
-		pod.Namespace = req.Namespace
-	}
-
-	s.logger.V(3).Info("Successfully parsed pod from request",
-		zap.String("podName", pod.Name),
-		zap.String("podNamespace", pod.Namespace),
-		zap.String("podUID", string(pod.UID)),
-	)
-
-	return &pod, nil
-}
-
-// createDNSConfig creates a DNS configuration from the webhook configuration
-func (s *Server) createDNSConfig(webhookConfig *Config) *DNSConfig {
-	// Build nameservers list: [node-local-dns, cluster-dns]
-	nameservers := []string{webhookConfig.NodeLocalDNSAddress}
-	if webhookConfig.ClusterDNSAddress != "" {
-		nameservers = append(nameservers, webhookConfig.ClusterDNSAddress)
-	}
-
-	dnsConfig := &DNSConfig{
-		Nameservers: nameservers,
-		Searches:    webhookConfig.SearchDomains,
-		Options:     webhookConfig.DNSOptions,
-	}
-
-	s.logger.V(3).Info("Created DNS configuration",
-		zap.Strings("nameservers", dnsConfig.Nameservers),
-		zap.Strings("searches", dnsConfig.Searches),
-		zap.Int("options", len(dnsConfig.Options)),
-	)
-
-	return dnsConfig
 }
 
 // generateJSONPatch generates a JSON patch between original and modified pods
@@ -170,10 +110,7 @@ func (s *Server) generateJSONPatch(original, modified *corev1.Pod) ([]byte, erro
 		return nil, fmt.Errorf("failed to marshal JSON patch: %w", err)
 	}
 
-	s.logger.V(3).Info("Generated JSON patch",
-		zap.Int("patchOperations", len(patches)),
-		zap.Int("patchSize", len(patchBytes)),
-	)
+	s.logger.V(3).Info("Generated JSON patch", "patchOperations", len(patches))
 
 	return patchBytes, nil
 }

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	"go.uber.org/zap"
 	admissionv1 "k8s.io/api/admission/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -44,6 +43,7 @@ type Server struct {
 // NewServer creates a new webhook server
 func NewServer(logger logr.Logger, port int, certFile, keyFile string, cfg *Config) (*Server, error) {
 	server := &Server{
+		logger:   logger,
 		config:   cfg,
 		port:     port,
 		certFile: certFile,
@@ -73,9 +73,9 @@ func NewServer(logger logr.Logger, port int, certFile, keyFile string, cfg *Conf
 // Start begins serving the webhook server
 func (s *Server) Start(ctx context.Context) error {
 	s.logger.Info("Starting webhook server",
-		zap.Int("port", s.port),
-		zap.String("certFile", s.certFile),
-		zap.String("keyFile", s.keyFile),
+		"port", s.port,
+		"certFile", s.certFile,
+		"keyFile", s.keyFile,
 	)
 
 	// Validate TLS certificate files
@@ -102,7 +102,7 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	case <-time.After(2 * time.Second):
 		// Server started successfully
-		s.logger.Info("Webhook server started successfully", zap.Int("port", s.port))
+		s.logger.Info("Webhook server started successfully", "port", s.port)
 		return nil
 	}
 }
@@ -127,14 +127,11 @@ func (s *Server) Stop(ctx context.Context) error {
 func (s *Server) HandleInject(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 
-	s.logger.Info("Processing admission request",
-		zap.String("method", r.Method),
-		zap.String("url", r.URL.Path),
-	)
+	s.logger.V(3).Info("Processing admission request", "method", r.Method, "url", r.URL.Path)
 
 	// Validate request method
 	if r.Method != http.MethodPost {
-		s.logger.Error(fmt.Errorf("method not allowed"), "Invalid request method", zap.String("method", r.Method))
+		s.logger.Error(fmt.Errorf("method not allowed"), "Invalid request method", "method", r.Method)
 		s.writeErrorResponse(w, http.StatusMethodNotAllowed, "Only POST method is allowed")
 		return
 	}
@@ -142,7 +139,7 @@ func (s *Server) HandleInject(w http.ResponseWriter, r *http.Request) {
 	// Validate content type
 	contentType := r.Header.Get("Content-Type")
 	if contentType != ContentTypeJSON {
-		s.logger.Error(fmt.Errorf("content type mismatch"), "Invalid content type", zap.String("contentType", contentType))
+		s.logger.Error(fmt.Errorf("content type mismatch"), "Invalid content type", "contentType", contentType)
 		s.writeErrorResponse(w, http.StatusBadRequest, "Content-Type must be application/json")
 		return
 	}
@@ -157,15 +154,15 @@ func (s *Server) HandleInject(w http.ResponseWriter, r *http.Request) {
 	defer r.Body.Close()
 
 	// Parse admission review request
-	admissionReview, err := s.parseAdmissionReview(body)
-	if err != nil {
-		s.logger.Error(err, "Failed to parse admission review")
+	var admissionReview admissionv1.AdmissionReview
+	if err := json.Unmarshal(body, &admissionReview); err != nil {
+		s.logger.Error(err, "Failed to unmarshal admission review")
 		s.writeErrorResponse(w, http.StatusBadRequest, fmt.Sprintf("Failed to parse admission review: %v", err))
 		return
 	}
 
 	// Process the admission request
-	response := s.processAdmissionRequest(admissionReview.Request, startTime)
+	response := s.processAdmissionRequest(admissionReview.Request)
 
 	// Create admission review response
 	admissionResponse := &admissionv1.AdmissionReview{
@@ -196,10 +193,10 @@ func (s *Server) HandleInject(w http.ResponseWriter, r *http.Request) {
 	if !response.Allowed {
 		result = "failure"
 	}
-	s.logger.Info("Admission request processed",
-		zap.Duration("Duration", time.Since(startTime)),
-		zap.String("result", result),
-		zap.Bool("allowed", response.Allowed),
+	s.logger.V(3).Info("Admission request processed",
+		"Duration", time.Since(startTime),
+		"result", result,
+		"allowed", response.Allowed,
 	)
 }
 
@@ -215,49 +212,14 @@ func (s *Server) validateCertificates() error {
 	if len(cert.Certificate) == 0 {
 		return fmt.Errorf("certificate is empty")
 	}
-
-	s.logger.Info("TLS certificates validated successfully",
-		zap.String("certFile", s.certFile),
-		zap.String("keyFile", s.keyFile),
-	)
-
 	return nil
-}
-
-// parseAdmissionReview parses the admission review from request body
-func (s *Server) parseAdmissionReview(body []byte) (*admissionv1.AdmissionReview, error) {
-	var admissionReview admissionv1.AdmissionReview
-
-	if err := json.Unmarshal(body, &admissionReview); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal admission review: %w", err)
-	}
-
-	// Validate admission review structure
-	if admissionReview.Request == nil {
-		return nil, fmt.Errorf("admission review request is nil")
-	}
-
-	if admissionReview.Request.UID == "" {
-		return nil, fmt.Errorf("admission review request UID is empty")
-	}
-
-	s.logger.V(3).Info("Parsed admission review request",
-		zap.String("uid", string(admissionReview.Request.UID)),
-		zap.String("kind", admissionReview.Request.Kind.Kind),
-		zap.String("resource", admissionReview.Request.Resource.Resource),
-		zap.String("operation", string(admissionReview.Request.Operation)),
-		zap.String("namespace", admissionReview.Request.Namespace),
-		zap.String("name", admissionReview.Request.Name),
-	)
-
-	return &admissionReview, nil
 }
 
 // writeErrorResponse writes an error response to the client
 func (s *Server) writeErrorResponse(w http.ResponseWriter, statusCode int, message string) {
-	s.logger.Info("Writing error response",
-		zap.Int("statusCode", statusCode),
-		zap.String("message", message),
+	s.logger.V(3).Info("Writing error response",
+		"statusCode", statusCode,
+		"message", message,
 	)
 
 	w.Header().Set("Content-Type", ContentTypeJSON)
@@ -301,9 +263,4 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(response)
-}
-
-// generateRequestID generates a unique request ID for logging
-func generateRequestID() string {
-	return fmt.Sprintf("req-%d", time.Now().UnixNano())
 }
